@@ -20,7 +20,7 @@ This repository contains a single Python script that profiles SQL Server tables,
 2. Edit `CONFIG` in `sqlserver_3nf_audit.py`:
    - Add a source entry with a valid ODBC connection string.
    - Adjust scope filters (schema/table regex or allowlist) as needed.
-3. Run: `python sqlserver_3nf_audit.py`
+3. Run: `python sqlserver_3nf_audit.py` (or `python sqlserver_3nf_audit.py test` to target the dockerized fixture).
 4. Review outputs in `output/run_YYYYMMDD_HHMMSS/`.
 
 ## Dockerized SQL Server test fixture
@@ -41,6 +41,8 @@ Use the resulting connection string in `sqlserver_3nf_audit.py`:
 ```
 mssql+pyodbc://sa:YourStrong!Passw0rd@localhost:1433/OperationsDemo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
 ```
+
+Alternatively, run `python sqlserver_3nf_audit.py test` to point the script at the container automatically (honoring the `MSSQL_SA_PASSWORD` environment variable if set).
 
 > The dataset intentionally contains some denormalized columns (e.g., duplicated customer and warehouse attributes) to surface 2NF/3NF findings during testing.
 
