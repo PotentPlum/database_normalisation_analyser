@@ -12,9 +12,11 @@ no schema changes are executed.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -844,5 +846,31 @@ class Runner:
         }
 
 
+def _configure_test_source() -> None:
+    """Point CONFIG to the dockerized SQL Server test fixture when requested."""
+
+    password = os.getenv("MSSQL_SA_PASSWORD", "YourStrong!Passw0rd")
+    test_url = (
+        "mssql+pyodbc://sa:"
+        f"{password}"
+        "@localhost:1433/OperationsDemo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+    )
+    CONFIG["SOURCES"] = [{"name": "DockerSQL", "sqlalchemy_url": test_url}]
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Audit SQL Server tables for 3NF readiness.")
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=["test"],
+        help="Use 'test' to run against the dockerized OperationsDemo database.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = _parse_args()
+    if args.mode == "test":
+        _configure_test_source()
     Runner().run()
