@@ -23,6 +23,25 @@ This repository contains a single Python script that profiles SQL Server tables,
 3. Run: `python sqlserver_3nf_audit.py`
 4. Review outputs in `output/run_YYYYMMDD_HHMMSS/`.
 
+## Dockerized SQL Server test fixture
+To exercise the audit tool against a realistic operational schema (20 interrelated tables, mixed normalization quality, and multi-million-row tables), a ready-to-run SQL Server image is provided.
+
+### Build and run
+```bash
+docker build -t operations-demo-sqlserver .
+docker run -e MSSQL_SA_PASSWORD=YourStrong!Passw0rd -p 1433:1433 operations-demo-sqlserver
+```
+
+The container boots SQL Server, creates an `OperationsDemo` database, and seeds representative data, including several tables with more than one million rows. Adjust the `MSSQL_SA_PASSWORD` environment variable at run time if you prefer a different credential.
+
+Use the resulting connection string in `sqlserver_3nf_audit.py`:
+
+```
+mssql+pyodbc://sa:YourStrong!Passw0rd@localhost:1433/OperationsDemo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+```
+
+> The dataset intentionally contains some denormalized columns (e.g., duplicated customer and warehouse attributes) to surface 2NF/3NF findings during testing.
+
 ## Configuration overview
 All settings live inside `CONFIG` at the top of `sqlserver_3nf_audit.py`:
 
