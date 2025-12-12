@@ -109,6 +109,14 @@ CONFIG: Dict[str, Any] = {
 # --------------------------------------------------------------------------------------
 # Utility helpers
 # --------------------------------------------------------------------------------------
+def build_sample_clause(total_rows: int) -> str:
+    cfg = CONFIG["SAMPLING"]
+    if total_rows <= cfg["FULL_SCAN_MAX_ROWS"]:
+        return ""  # Full scan is acceptable
+    pct = max(cfg["SAMPLE_MIN_PCT"], min(cfg["SAMPLE_TARGET_ROWS"] / total_rows * 100, cfg["SAMPLE_MAX_PCT"]))
+    return f"TABLESAMPLE ({pct:.4f} PERCENT)"
+
+
 def quote_ident(name: str) -> str:
     """Safely quote SQL Server identifiers using bracket escaping.
 
@@ -147,6 +155,7 @@ class TableProfile:
     schema: str
     table: str
     row_count: int
+    sample_clause: str
     columns: List[ColumnProfile]
     determinant_pool: List[str] = field(default_factory=list)
 
@@ -270,11 +279,7 @@ class Profiler:
         self.client = client
 
     def _sample_clause(self, total_rows: int) -> str:
-        cfg = CONFIG["SAMPLING"]
-        if total_rows <= cfg["FULL_SCAN_MAX_ROWS"]:
-            return ""  # Full scan is acceptable
-        pct = max(cfg["SAMPLE_MIN_PCT"], min(cfg["SAMPLE_TARGET_ROWS"] / total_rows * 100, cfg["SAMPLE_MAX_PCT"]))
-        return f"TABLESAMPLE ({pct:.4f} PERCENT)"
+        return build_sample_clause(total_rows)
 
     def profile_table(self, schema: str, table: str) -> TableProfile:
         total_rows = self.client.get_rowcount(schema, table)
@@ -334,7 +339,13 @@ class Profiler:
                 )
             )
 
-        return TableProfile(schema=schema, table=table, row_count=total_rows, columns=column_profiles)
+        return TableProfile(
+            schema=schema,
+            table=table,
+            row_count=total_rows,
+            sample_clause=sample_clause,
+            columns=column_profiles,
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -385,11 +396,12 @@ class KeyFinder:
     def __init__(self, client: SqlServerClient, profile: TableProfile) -> None:
         self.client = client
         self.profile = profile
+        self.sample_clause = profile.sample_clause
 
     def _combination_stats(self, schema: str, table: str, cols: Sequence[str]) -> KeyCandidate:
         # Ignore rows where any key column is NULL.
         not_null_filter = " AND ".join(f"{quote_ident(c)} IS NOT NULL" for c in cols)
-        base_sql = f"FROM {quote_ident(schema)}.{quote_ident(table)} WHERE {not_null_filter}"
+        base_sql = f"FROM {quote_ident(schema)}.{quote_ident(table)} {self.sample_clause} WHERE {not_null_filter}"
         count_sql = f"SELECT COUNT(*) {base_sql}"
         tested_rows = int(self.client.fetch_value(count_sql))
 
@@ -400,7 +412,9 @@ class KeyFinder:
         )
         duplicate_excess_rows = int(self.client.fetch_value(dup_sql) or 0)
 
-        null_sql = f"SELECT COUNT(*) FROM {quote_ident(schema)}.{quote_ident(table)} WHERE NOT ({not_null_filter})"
+        null_sql = (
+            f"SELECT COUNT(*) FROM {quote_ident(schema)}.{quote_ident(table)} {self.sample_clause} WHERE NOT ({not_null_filter})"
+        )
         null_rows = int(self.client.fetch_value(null_sql))
 
         dup_pct = (duplicate_excess_rows / tested_rows) if tested_rows else 1.0
@@ -432,6 +446,7 @@ class FDDiscoverer:
     def __init__(self, client: SqlServerClient, profile: TableProfile) -> None:
         self.client = client
         self.profile = profile
+        self.sample_clause = profile.sample_clause
 
     def _dependent_candidates(self, determinant: Sequence[str]) -> List[str]:
         # Dependents exclude determinant columns and blob/excluded columns.
@@ -450,7 +465,7 @@ class FDDiscoverer:
     def _fd_stats(self, determinant: Sequence[str], dependent: str) -> FunctionalDependency:
         schema, table = self.profile.schema, self.profile.table
         not_null_filter = " AND ".join(f"{quote_ident(c)} IS NOT NULL" for c in list(determinant) + [dependent])
-        base_sql = f"FROM {quote_ident(schema)}.{quote_ident(table)} WHERE {not_null_filter}"
+        base_sql = f"FROM {quote_ident(schema)}.{quote_ident(table)} {self.sample_clause} WHERE {not_null_filter}"
 
         tested_rows = int(self.client.fetch_value(f"SELECT COUNT(*) {base_sql}"))
         total_rows = self.profile.row_count
@@ -472,12 +487,26 @@ class FDDiscoverer:
 
         # Collect a small sample of violating determinant values for evidence.
         sample_sql = (
-            f"SELECT TOP (5) {', '.join(quote_ident(c) for c in determinant)},"
-            f" STRING_AGG(CAST({quote_ident(dependent)} AS NVARCHAR(4000)), ', ') WITHIN GROUP (ORDER BY {quote_ident(dependent)}) AS values_seen"
-            f" FROM {quote_ident(schema)}.{quote_ident(table)}"
+            f"WITH src AS ("
+            f" SELECT {', '.join(quote_ident(c) for c in determinant)}, {quote_ident(dependent)}"
+            f" FROM {quote_ident(schema)}.{quote_ident(table)} {self.sample_clause}"
             f" WHERE {not_null_filter}"
-            f" GROUP BY {', '.join(quote_ident(c) for c in determinant)}"
-            f" HAVING COUNT(DISTINCT {quote_ident(dependent)}) > 1"
+            f")"
+            f" SELECT TOP (5) {', '.join(f'g.{quote_ident(c)}' for c in determinant)},"
+            f" STUFF(("
+            f"    SELECT DISTINCT ', ' + CAST(s.{quote_ident(dependent)} AS NVARCHAR(4000))"
+            f"    FROM src s"
+            f"    WHERE " + " AND ".join(f"s.{quote_ident(c)} = g.{quote_ident(c)}" for c in determinant) +
+            f"    ORDER BY ', ' + CAST(s.{quote_ident(dependent)} AS NVARCHAR(4000))"
+            f"    FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)')"
+            f", 1, 2, '') AS values_seen"
+            f" FROM ("
+            f"    SELECT {', '.join(quote_ident(c) for c in determinant)},"
+            f"           COUNT(DISTINCT {quote_ident(dependent)}) AS dep_count"
+            f"    FROM src"
+            f"    GROUP BY {', '.join(quote_ident(c) for c in determinant)}"
+            f" ) g"
+            f" WHERE g.dep_count > 1"
         )
         sample_rows = self.client.execute(sample_sql).fetchall()
         sample = []
@@ -772,6 +801,7 @@ class Runner:
             "schema": profile.schema,
             "table": profile.table,
             "row_count": profile.row_count,
+            "sample_clause": profile.sample_clause,
             "determinant_pool": profile.determinant_pool,
             "columns": [vars(c) for c in profile.columns],
         }
