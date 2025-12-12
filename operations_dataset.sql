@@ -311,7 +311,7 @@ ORDER BY n;
 
 INSERT INTO dbo.InventoryLevels (WarehouseID, ProductID, OnHand, LastCounted)
 SELECT TOP (20000)
-    ((n - 1) % 25) + 1,
+    (((n - 1) / 1000) % 25) + 1,
     ((n - 1) % 1000) + 1,
     (n % 200) + 20,
     DATEADD(DAY, -(n % 90), SYSUTCDATETIME())
