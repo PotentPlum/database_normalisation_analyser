@@ -850,11 +850,7 @@ def _configure_test_source() -> None:
     """Point CONFIG to the dockerized SQL Server test fixture when requested."""
 
     password = os.getenv("MSSQL_SA_PASSWORD", "YourStrong!Passw0rd")
-    test_url = (
-        "mssql+pyodbc://sa:"
-        f"{password}"
-        "@localhost:1433/OperationsDemo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
-    )
+    test_url = f"mssql+pymssql://sa:{password}@localhost:1433/OperationsDemo"
     CONFIG["SOURCES"] = [{"name": "DockerSQL", "sqlalchemy_url": test_url}]
 
 

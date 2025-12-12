@@ -7,11 +7,15 @@ ENV ACCEPT_EULA=Y \
 
 WORKDIR /usr/src/app
 
-COPY operations_dataset.sql /usr/src/app/operations_dataset.sql
-COPY init-db.sh /usr/src/app/init-db.sh
+COPY --chmod=755 operations_dataset.sql sqlserver_3nf_audit.py init-db.sh ./
 
-RUN chmod +x /usr/src/app/init-db.sh
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && pip3 install --no-cache-dir sqlalchemy pymssql \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 1433
 
-CMD ["/bin/bash", "/usr/src/app/init-db.sh"]
+ENTRYPOINT ["/usr/src/app/init-db.sh"]
+CMD ["serve"]
