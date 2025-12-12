@@ -34,8 +34,18 @@ To exercise the audit tool against a realistic operational schema (20 interrelat
    ```
 
 2. **Seed from the host** using the Python seeder; it targets `localhost:1433` and skips work if `OperationsDemo` already exists:
+   - Bash:
+     ```bash
+     python seed_operations_demo.py --password "${MSSQL_SA_PASSWORD:-YourStrong!Passw0rd}"
+     ```
+   - PowerShell (password already picked up from `MSSQL_SA_PASSWORD` if set):
+     ```powershell
+     python seed_operations_demo.py --password ${Env:MSSQL_SA_PASSWORD}
+     ```
+
+   If your system ships a different SQL Server ODBC driver (e.g., **ODBC Driver 17 for SQL Server** on Windows), pass it explicitly:
    ```bash
-   python seed_operations_demo.py --password "${MSSQL_SA_PASSWORD:-YourStrong!Passw0rd}"
+   python seed_operations_demo.py --driver "ODBC Driver 17 for SQL Server"
    ```
 
 3. **Run the audit script**:
