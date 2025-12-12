@@ -27,9 +27,11 @@ This repository contains a single Python script that profiles SQL Server tables,
 To exercise the audit tool against a realistic operational schema (20 interrelated tables, mixed normalization quality, and multi-million-row tables), a ready-to-run SQL Server image is provided.
 
 ### Build and run
+Use the provided `docker-compose.yml` to build the SQL Server image (which seeds the operational dataset via `init-db.sh`) and start the container:
+
 ```bash
-docker build -t operations-demo-sqlserver .
-docker run -e MSSQL_SA_PASSWORD=YourStrong!Passw0rd -p 1433:1433 operations-demo-sqlserver
+# Optionally override the SA password with MSSQL_SA_PASSWORD
+docker compose up --build
 ```
 
 The container boots SQL Server, creates an `OperationsDemo` database, and seeds representative data, including several tables with more than one million rows. Adjust the `MSSQL_SA_PASSWORD` environment variable at run time if you prefer a different credential.
