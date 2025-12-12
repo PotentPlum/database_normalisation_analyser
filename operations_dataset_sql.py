@@ -1,4 +1,6 @@
-SET NOCOUNT ON;
+"""OperationsDemo dataset DDL/DML for seeding the Docker SQL Server."""
+
+OPERATIONS_DATASET_SQL = r"""SET NOCOUNT ON;
 
 IF DB_ID('OperationsDemo') IS NOT NULL
 BEGIN
@@ -432,3 +434,4 @@ FROM dbo.Numbers
 ORDER BY n;
 
 PRINT 'OperationsDemo database created with 20 interrelated tables and rich sample data.';
+"""

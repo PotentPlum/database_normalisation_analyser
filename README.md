@@ -20,31 +20,45 @@ This repository contains a single Python script that profiles SQL Server tables,
 2. Edit `CONFIG` in `sqlserver_3nf_audit.py`:
    - Add a source entry with a valid ODBC connection string.
    - Adjust scope filters (schema/table regex or allowlist) as needed.
-3. Run: `python sqlserver_3nf_audit.py` (or `python sqlserver_3nf_audit.py test` to target the dockerized fixture).
+3. Run: `python sqlserver_3nf_audit.py`.
+   - Use `python sqlserver_3nf_audit.py test` to point at the local dockerized SQL Server fixture (see below).
 4. Review outputs in `output/run_YYYYMMDD_HHMMSS/`.
 
 ## Dockerized SQL Server test fixture
-To exercise the audit tool against a realistic operational schema (20 interrelated tables, mixed normalization quality, and multi-million-row tables), a ready-to-run SQL Server image is provided.
+To exercise the audit tool against a realistic operational schema (20 interrelated tables, mixed normalization quality, and multi-million-row tables), a ready-to-run SQL Server service is provided via docker compose. No Dockerfile or SQL mounting is required.
 
-### Build and run
-Use the provided `compose.yml` to build the SQL Server image (which seeds the operational dataset from `operations_dataset.sql`) and start the container:
+### Three-step flow
+1. **Start SQL Server via compose** (set `MSSQL_SA_PASSWORD` if you want something other than the default):
+   ```bash
+   docker compose up -d sqlserver
+   ```
 
-```bash
-# Optionally override the SA password with MSSQL_SA_PASSWORD
-docker compose -f compose.yml up --build
-```
+2. **Seed from the host** using the Python seeder; it targets `localhost:1433` and skips work if `OperationsDemo` already exists:
+   ```bash
+   # Bash
+   python seed_operations_demo.py --password "${MSSQL_SA_PASSWORD:-YourStrong!Passw0rd}"
 
-The container boots SQL Server, creates an `OperationsDemo` database, and seeds representative data, including several tables with more than one million rows. Adjust the `MSSQL_SA_PASSWORD` environment variable at run time if you prefer a different credential.
+   # PowerShell
+   python seed_operations_demo.py --password "${env:MSSQL_SA_PASSWORD}"  # or omit to fall back to the default
+   ```
 
-Use the resulting connection string in `sqlserver_3nf_audit.py`:
+3. **Run the audit script**:
+   - `python sqlserver_3nf_audit.py test` targets the dockerized SQL Server.
+   - `python sqlserver_3nf_audit.py` uses whatever sources are configured in `CONFIG`.
+
+When the container is running, you can connect directly with:
 
 ```
 mssql+pyodbc://sa:YourStrong!Passw0rd@localhost:1433/OperationsDemo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
 ```
 
-Alternatively, run `python sqlserver_3nf_audit.py test` to point the script at the container automatically (honoring the `MSSQL_SA_PASSWORD` environment variable if set).
-
 > The dataset intentionally contains some denormalized columns (e.g., duplicated customer and warehouse attributes) to surface 2NF/3NF findings during testing.
+
+### Local prerequisites
+
+- Install a SQL Server ODBC driver (17 or 18). If the default `ODBC Driver 18 for SQL Server` name does not exist on your OS, set `MSSQL_ODBC_DRIVER` or pass `--driver` to the seeder.
+- Ensure `pyodbc` is compiled against that driver. Driver download links: https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server.
+- `sqlserver_3nf_audit.py test` and `seed_operations_demo.py` both honor `MSSQL_ODBC_DRIVER` for the driver name.
 
 ## Configuration overview
 All settings live inside `CONFIG` at the top of `sqlserver_3nf_audit.py`:
