@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+from urllib.parse import quote_plus
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -850,7 +851,12 @@ def _configure_test_source() -> None:
     """Point CONFIG to the dockerized SQL Server test fixture when requested."""
 
     password = os.getenv("MSSQL_SA_PASSWORD", "YourStrong!Passw0rd")
-    test_url = f"mssql+pymssql://sa:{password}@localhost:1433/OperationsDemo"
+    encoded_pw = quote_plus(password)
+    test_url = (
+        "mssql+pyodbc://sa:" 
+        f"{encoded_pw}"
+        "@localhost:1433/OperationsDemo?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+    )
     CONFIG["SOURCES"] = [{"name": "DockerSQL", "sqlalchemy_url": test_url}]
 
 
