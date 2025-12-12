@@ -20,12 +20,35 @@ from operations_dataset_sql import OPERATIONS_DATASET_SQL
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 1433
 DEFAULT_PASSWORD = os.environ.get("MSSQL_SA_PASSWORD", "YourStrong!Passw0rd")
+DEFAULT_DRIVER = os.environ.get("MSSQL_ODBC_DRIVER", "ODBC Driver 18 for SQL Server")
 
 
-def build_engine(host: str, port: int, password: str):
+def ensure_driver_available(driver: str) -> None:
+    try:
+        import pyodbc
+    except ModuleNotFoundError as exc:  # pragma: no cover - defensive guardrail
+        raise SystemExit(
+            "pyodbc is required to talk to SQL Server. Install it with 'pip install pyodbc'"
+        ) from exc
+
+    available = set(pyodbc.drivers())
+    if driver not in available:
+        if available:
+            formatted = ", ".join(sorted(available))
+            raise SystemExit(
+                f"ODBC driver '{driver}' not installed. Installed drivers: {formatted}"
+            )
+        raise SystemExit(
+            "No SQL Server ODBC drivers detected. Install Microsoft ODBC Driver 18 (or 17) for SQL Server."
+        )
+
+
+def build_engine(host: str, port: int, password: str, driver: str):
     url = (
         "mssql+pyodbc://sa:" + quote_plus(password)
-        + f"@{host}:{port}/master?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+        + f"@{host}:{port}/master?driver="
+        + quote_plus(driver)
+        + "&TrustServerCertificate=yes"
     )
     return create_engine(url, connect_args={"timeout": 30})
 
@@ -72,9 +95,15 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="SQL Server port (default: %(default)s)")
     parser.add_argument(
         "--password", default=DEFAULT_PASSWORD, help="SA password (default: env MSSQL_SA_PASSWORD or YourStrong!Passw0rd)")
+    parser.add_argument(
+        "--driver",
+        default=DEFAULT_DRIVER,
+        help="ODBC driver name (default: env MSSQL_ODBC_DRIVER or 'ODBC Driver 18 for SQL Server')",
+    )
 
     args = parser.parse_args()
-    engine = build_engine(args.host, args.port, args.password)
+    ensure_driver_available(args.driver)
+    engine = build_engine(args.host, args.port, args.password, args.driver)
     seed(engine)
 
 
