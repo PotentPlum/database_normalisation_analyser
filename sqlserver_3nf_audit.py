@@ -28,6 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, Result
+from tqdm import tqdm
 
 
 # --------------------------------------------------------------------------------------
@@ -107,6 +108,44 @@ CONFIG: Dict[str, Any] = {
         "nvarchar(max)",
     },
 }
+
+
+# --------------------------------------------------------------------------------------
+# Config Manager
+# --------------------------------------------------------------------------------------
+class ConfigManager:
+    """Manages configuration, including parsing CLI arguments and overrides."""
+
+    @staticmethod
+    def parse_args() -> argparse.Namespace:
+        parser = argparse.ArgumentParser(description="Audit SQL Server tables for 3NF readiness.")
+        parser.add_argument(
+            "mode",
+            nargs="?",
+            choices=["test"],
+            help="Use 'test' to run against the dockerized OperationsDemo database.",
+        )
+        parser.add_argument(
+            "--confidence",
+            type=float,
+            default=CONFIG["THRESHOLDS"]["FD_MIN_COVERAGE_PCT"],
+            help="Minimum coverage percentage for FD to be considered strong.",
+        )
+        parser.add_argument(
+            "--max-rows",
+            type=int,
+            default=CONFIG["SAMPLING"]["FULL_SCAN_MAX_ROWS"],
+            help="Max rows for full scan before sampling.",
+        )
+        # Add more override options as needed
+        return parser.parse_args()
+
+    @staticmethod
+    def apply_overrides(args: argparse.Namespace) -> None:
+        if args.confidence:
+            CONFIG["THRESHOLDS"]["FD_MIN_COVERAGE_PCT"] = args.confidence
+        if args.max_rows:
+            CONFIG["SAMPLING"]["FULL_SCAN_MAX_ROWS"] = args.max_rows
 
 
 # --------------------------------------------------------------------------------------
@@ -202,6 +241,7 @@ class FunctionalDependency:
 
 @dataclass
 class Proposal:
+    type: str  # "2NF" or "3NF"
     determinant: Tuple[str, ...]
     dependents: List[str]
     confidence: float
@@ -291,7 +331,8 @@ class Profiler:
         columns_meta = MetadataReader(self.client).list_columns(schema, table)
         column_profiles: List[ColumnProfile] = []
 
-        for col in columns_meta:
+        # Add tqdm for progress tracking on columns
+        for col in tqdm(columns_meta, desc=f"Profiling columns for {schema}.{table}", leave=False):
             name = col["name"]
             data_type = col["data_type"]
             nullable = col["nullable"]
@@ -633,15 +674,51 @@ class ProposalBuilder:
 
     def build(self) -> List[Proposal]:
         proposals: List[Proposal] = []
+
+        # Consolidate issues by determinant to avoid duplicates
+        issues_by_det: Dict[Tuple[str, ...], Dict[str, Any]] = defaultdict(lambda: {"dependents": [], "confidences": [], "type": "3NF"})
+
+        # Handle 2NF issues (Partial Dependencies)
+        for issue in self.normalization.get("second_nf_issues", []):
+             determinant = tuple(issue["determinant"])
+             dependent = issue["dependent"]
+             confidence = max(0.1, 1 - issue["violating_rows_pct"])
+             issues_by_det[determinant]["dependents"].append(dependent)
+             issues_by_det[determinant]["confidences"].append(confidence)
+             issues_by_det[determinant]["type"] = "2NF"
+
+        # Handle 3NF issues (Transitive Dependencies)
         for issue in self.normalization.get("third_nf_issues", []):
             determinant = tuple(issue["determinant"])
             dependent = issue["dependent"]
             confidence = max(0.1, 1 - issue["violating_rows_pct"])
+            issues_by_det[determinant]["dependents"].append(dependent)
+            issues_by_det[determinant]["confidences"].append(confidence)
+            # 3NF is default, but if it was already 2NF it remains 2NF as 2NF is stricter violation if it exists?
+            # Actually, distinct issues. Let's separate or keep as is.
+            # If a determinant is partial key (2NF), it will be caught there.
+            # If it is not part of key (3NF), it is caught here.
+            # A determinant cannot be both proper subset of key AND not subset of key.
+            # So they are mutually exclusive per determinant given one working key.
+
+        for determinant, data in issues_by_det.items():
+            dependents = list(set(data["dependents"])) # unique
+            avg_confidence = sum(data["confidences"]) / len(data["confidences"]) if data["confidences"] else 0.0
+
             notes = [
+                f"Violates {data['type']}: Determinant {determinant} determines {dependents}.",
                 "Review semantics and ensure determinant uniquely identifies dependent attributes.",
                 "Validate coverage and row counts before applying any schema change.",
             ]
-            proposals.append(Proposal(determinant=determinant, dependents=[dependent], confidence=confidence, notes=notes))
+
+            proposals.append(Proposal(
+                type=data["type"],
+                determinant=determinant,
+                dependents=dependents,
+                confidence=avg_confidence,
+                notes=notes
+            ))
+
         return proposals
 
 
@@ -676,15 +753,33 @@ class ArtifactWriter:
                 writer.writerow(row)
 
     def write_report(self, path: Path, context: Dict[str, Any]) -> None:
+        norm = context["normalization"]
+        proposals = context["proposals"]
+
         lines = [
             f"# 3NF Audit Report: {context['schema']}.{context['table']}",
             "",
+            "## Executive Summary",
+            f"- **Row Count**: {context['profile'].row_count}",
+            f"- **Working Key**: {norm['working_key']}",
+            f"- **Normalization Status**: {'Failed' if proposals else 'Passed'}",
+            "",
+        ]
+
+        if proposals:
+            lines.append("### Key Findings")
+            for p in proposals:
+                lines.append(f"- **{p.type} Violation**: Columns {p.dependents} appear to be determined by {p.determinant}, not the primary key.")
+            lines.append("")
+
+        lines.extend([
             "## Table Profile",
             f"- Row count: {context['profile'].row_count}",
             "- Determinant pool: " + ", ".join(context["profile"].determinant_pool),
             "",
             "## Key Candidates",
-        ]
+        ])
+
         for kc in context["keys"][:5]:
             lines.append(
                 f"- {kc.columns}: dup_pct={kc.dup_pct:.4%}, null_pct={kc.null_pct:.4%}, tested_rows={kc.tested_rows}"
@@ -697,7 +792,6 @@ class ArtifactWriter:
             )
         lines.append("")
         lines.append("## Normalization Findings")
-        norm = context["normalization"]
         lines.append(f"- Working key: {norm['working_key']}")
         lines.append(f"- 2NF issues: {len(norm['second_nf_issues'])}")
         lines.append(f"- 3NF issues: {len(norm['third_nf_issues'])}")
@@ -706,10 +800,13 @@ class ArtifactWriter:
         if context["proposals"]:
             for p in context["proposals"]:
                 lines.append(
-                    f"- New table T_{'_'.join(p.determinant)} with PK {p.determinant}; move {', '.join(p.dependents)} (confidence {p.confidence:.2f})"
+                    f"- **PROPOSAL ({p.type})**: Create new table T_{'_'.join(p.determinant)} with PK {p.determinant}"
                 )
+                lines.append(f"  - Move columns: {', '.join(p.dependents)}")
+                lines.append(f"  - Confidence: {p.confidence:.2f}")
                 for note in p.notes:
                     lines.append(f"  - Note: {note}")
+                lines.append("")
         else:
             lines.append("- No proposals. Table appears 3NF-compliant under tested constraints.")
 
@@ -734,11 +831,17 @@ class Runner:
             client = SqlServerClient(source["sqlalchemy_url"])
             metadata = MetadataReader(client)
             tables = metadata.list_tables()
-            for schema, table in tables:
+
+            # Progress bar for tables
+            table_iter = tqdm(tables, desc="Auditing tables")
+
+            for schema, table in table_iter:
                 if not self._in_scope(schema, table):
                     continue
                 fq = f"{schema}.{table}"
-                print(f"[INFO] Auditing {fq}")
+                table_iter.set_description(f"Auditing {fq}")
+                # print(f"[INFO] Auditing {fq}") # tqdm handles output now
+
                 try:
                     profile = Profiler(client).profile_table(schema, table)
                     DeterminantSelector(profile).build_pool()
@@ -840,6 +943,7 @@ class Runner:
     @staticmethod
     def _proposal_to_dict(p: Proposal) -> Dict[str, Any]:
         return {
+            "type": p.type,
             "determinant": list(p.determinant),
             "dependents": p.dependents,
             "confidence": p.confidence,
@@ -865,19 +969,9 @@ def _configure_test_source() -> None:
     CONFIG["SOURCES"] = [{"name": "DockerSQL", "sqlalchemy_url": test_url}]
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Audit SQL Server tables for 3NF readiness.")
-    parser.add_argument(
-        "mode",
-        nargs="?",
-        choices=["test"],
-        help="Use 'test' to run against the dockerized OperationsDemo database.",
-    )
-    return parser.parse_args()
-
-
 if __name__ == "__main__":
-    args = _parse_args()
+    args = ConfigManager.parse_args()
+    ConfigManager.apply_overrides(args)
     if args.mode == "test":
         _configure_test_source()
     Runner().run()
