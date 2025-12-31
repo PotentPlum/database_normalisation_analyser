@@ -1,0 +1,4 @@
+sqlalchemy
+pyodbc
+pytest
+flake8
