@@ -574,12 +574,15 @@ class NormalizationAnalyzer:
         self.profile = profile
         self.keys = keys
         self.fds = fds
+        self.strong_keys = [k.columns for k in keys if k.is_strong]
 
     def working_key(self) -> Tuple[str, ...]:
         fq = f"{self.profile.schema}.{self.profile.table}"
         forced = CONFIG["OVERRIDES"]["FORCE_KEY"].get(fq)
         if forced:
             return tuple(forced)
+        if self.strong_keys:
+            return self.strong_keys[0]
         if self.keys:
             return self.keys[0].columns
         # Fallback to best determinant heuristic if no candidates exist.
@@ -587,7 +590,12 @@ class NormalizationAnalyzer:
 
     def analyze(self) -> Dict[str, Any]:
         key_cols = set(self.working_key())
-        prime_cols = key_cols
+        prime_cols = set()
+        if self.strong_keys:
+            for cols in self.strong_keys:
+                prime_cols.update(cols)
+        else:
+            prime_cols = set(key_cols)
 
         second_nf = []
         third_nf = []
@@ -600,7 +608,7 @@ class NormalizationAnalyzer:
             if len(key_cols) > 1 and det_set.issubset(key_cols) and det_set != key_cols and fd.dependent not in prime_cols:
                 second_nf.append(fd)
             # 3NF: determinant is not a superkey and dependent is non-prime
-            if not det_set.issuperset(key_cols) and fd.dependent not in prime_cols:
+            if not self._is_superkey(det_set, key_cols) and fd.dependent not in prime_cols:
                 third_nf.append(fd)
 
         return {
@@ -609,6 +617,10 @@ class NormalizationAnalyzer:
             "second_nf_issues": [self._fd_summary(fd) for fd in second_nf],
             "third_nf_issues": [self._fd_summary(fd) for fd in third_nf],
         }
+
+    def _is_superkey(self, determinant: set[str], fallback_key: set[str]) -> bool:
+        keys_to_check = self.strong_keys or [tuple(fallback_key)]
+        return any(set(key).issubset(determinant) for key in keys_to_check)
 
     @staticmethod
     def _fd_summary(fd: FunctionalDependency) -> Dict[str, Any]:
@@ -636,7 +648,8 @@ class ProposalBuilder:
         for issue in self.normalization.get("third_nf_issues", []):
             determinant = tuple(issue["determinant"])
             dependent = issue["dependent"]
-            confidence = max(0.1, 1 - issue["violating_rows_pct"])
+            confidence = max(0.1, 1 - (issue["violating_rows_pct"] / 100))
+            confidence = min(confidence, 1.0)
             notes = [
                 "Review semantics and ensure determinant uniquely identifies dependent attributes.",
                 "Validate coverage and row counts before applying any schema change.",
