@@ -79,7 +79,8 @@ def seed(engine) -> None:
     print("Seeding OperationsDemo...")
     # SQL Server forbids CREATE/DROP/ALTER DATABASE inside explicit transactions,
     # so run the batches with autocommit enabled.
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+    autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+    with autocommit_engine.connect() as conn:
         for i, batch in enumerate(split_batches(OPERATIONS_DATASET_SQL), start=1):
             trimmed = batch.strip()
             if not trimmed:
